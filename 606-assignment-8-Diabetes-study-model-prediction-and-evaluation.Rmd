@@ -1,0 +1,212 @@
+---
+title: "606 Model prediction and evaluation assignment 8"
+author: "abebaw M"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE,message=FALSE}
+knitr::opts_chunk$set(root.dir = "C:/Users/abeba/IAF 606")
+```
+
+
+```{r library,echo=FALSE}
+library(sjlabelled)
+library(dplyr)
+library(mosaic)
+library(sjPlot)
+library(psych)
+library(sjmisc)
+library(naniar)
+library(car)
+library(visdat)
+library(UpSetR)
+library(magrittr)
+library(stargazer)
+library(arsenal)
+library(descr)
+library(summarytools)
+library(jtools)
+library(kableExtra)
+library(caTools)
+library(pROC)
+library(tidyverse)
+```
+
+```{r}
+mydata <- read.csv("C:/Users/abeba/IAF 606/diabetes_new_df.csv",header = T)
+```
+
+```{r}
+mydata2 <- mydata %>% mutate(binary_readmitted=ifelse(Readmitted=="EarlyReadmitted",1,0))
+```
+
+*Splitting the data set into train and test data*
+
+```{r}
+set.seed(123)
+sample = sample.split(mydata2,SplitRatio = 0.70)
+train =subset(mydata2,sample ==TRUE)
+test=subset(mydata2, sample==FALSE)
+dim(test)
+dim(train)
+```
+
+# Final model
+```{r}
+glm_Final <- glm(binary_readmitted ~ -Readmitted + Discharge + Race + Admit + Med_spec +
+                   Time_hosp + Age + Diag + HbA1c + Age:Med_spec + Diag:Discharge + Race:Discharge +
+                  Discharge:Time_hosp + Admit:Diag + Admit:Age + Time_hosp:Med_spec + Time_hosp:Diag + 
+                   Med_spec:Discharge + Med_spec:Diag + HbA1c:Diag + HbA1c:Med_spec, family = binomial, data= mydata2, 
+                  na.action=na.exclude)
+summary(glm_Final) 
+```
+
+```{r}
+Anova(glm_Final)
+```
+
+
+# Calculate Pseudo R2
+```{r}
+#install.packages("DescTools")
+library(DescTools)
+
+glm_Final %>%
+  PseudoR2()
+```
+
+# Calculate average marginal effects (AME)
+```{r}
+#install.packages("margins")
+library(margins)
+
+glm_Final %>%
+  margins() %>%
+  summary()
+```
+```{r}
+predicted_probability_default = predict(glm_Final, newdata = test, type = "response")
+```
+
+# Predict probability using logistic regression (where the target variable is a binary outcome)
+```{r}
+test <- test %>% 
+  mutate(predicted_probability_default = predict(glm_Final, newdata = test, type = "response")) %>% 
+  mutate(predicted_default = if_else(predicted_probability_default>0.5, 1, 0))
+```
+# Confusion Matrix
+```{r}
+library(caret)
+confusionMatrix(as.factor(test$predicted_default), as.factor(test$binary_readmitted), positive = "1")
+```
+
+# ROC Curve and AUC
+```{r}
+library(cutpointr)
+
+roc <- roc(test, x= predicted_probability_default, class = binary_readmitted, pos_class = 1, neg_class = 0)
+
+plot(roc)
+```
+# Auc value 
+```{r}
+auc(roc)
+```
+
+
+```{r}
+plot(roc) + 
+  geom_line(data = roc, color = "red") + 
+  geom_abline(slope = 1) + 
+  labs(title = "ROC Curve for Logistic Regression")
+```
+# After determining the best model with the maximum ROC, 
+# How to obtain the optimal cutoff to maximize accuracy or the sum of sensitivity and specificity
+```{r}
+cutpointr(test, x= predicted_probability_default, class = binary_readmitted, pos_class = 1, neg_class = 0, 
+          method = maximize_metric, metric = accuracy, na.rm = TRUE)
+```
+```{r}
+cutpointr(test, x= predicted_probability_default, class = binary_readmitted, pos_class = 1, neg_class = 0, 
+          method = maximize_metric, metric = sum_sens_spec, na.rm = TRUE)
+```
+
+```{r}
+RMSE       = mean((test$binary_readmitted - predicted_probability_default)^2)
+RMSE
+```
+
+
+*If the cutting point based on the optimal_cutting method above approximately 0.1*
+*the prediction of readmission  as shown below*
+**Finding model predictions based on test set**
+```{r}
+glm_probs = predict(glm_Final, test, type="response")
+```
+
+```{r}
+head(glm_probs, 10)
+```
+
+
+```{r}
+glm_pred=rep("Other", 23328)
+glm_pred[glm_probs>.1] = "Earlyreadmitted"
+mytable = table(glm_pred,test$binary_readmitted)
+mytable
+```
+
+**Efficiency/accuracy measure**
+
+```{r}
+efficiency <- sum(diag(mytable))/sum(mytable)
+efficiency
+```
+
+**Plotting area under curve**
+
+```{r}
+roc(binary_readmitted~glm_Final$fitted.values, data = mydata2, plot = TRUE, main = "ROC CURVE", col= "blue")
+```
+
+
+**Calculating auc measure**
+
+```{r}
+auc(binary_readmitted~glm_Final$fitted.values, data = mydata2)
+```
+**Extracting true/false negatives/positives from confusion matrix**
+
+```{r}
+TP <- mytable[1, 1]
+TN <- mytable[2, 2] 
+FP <- mytable[1, 2]
+FN <- mytable[2, 1]
+```
+
+```{r}
+#calculating correct classification rate
+rate <- (TP + TN) / (TP + TN + FP + FN)
+rate <- round(rate, 4)*100
+rate
+```
+**Quantitative analysis for paper model**
+
+```{r}
+precision <- TP/(TP + FP)
+cat('Precision:', precision)
+cat("\n")  
+specificity <- TN/(TN + FP)
+cat('Specificity:', specificity)
+cat("\n")  
+sensitivity <- TP/(TP + FN)
+cat('Sensitivity:', sensitivity)
+cat("\n")  
+F1_Score <- 2*TP/(2*TP + FP + FN)
+cat("F1_Score:", F1_Score)
+cat("\n")  
+J = sensitivity + specificity - 1
+cat('J:', J)
+```
+
